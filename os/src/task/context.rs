@@ -1,6 +1,6 @@
 //! Implementation of [`TaskContext`]
 
-#[derive(Copy, Clone)]
+#[derive(Default, Copy, Clone)]
 #[repr(C)]
 /// task context structure containing some registers
 pub struct TaskContext {
@@ -13,14 +13,6 @@ pub struct TaskContext {
 }
 
 impl TaskContext {
-    /// Create a new empty task context
-    pub fn zero_init() -> Self {
-        Self {
-            ra: 0,
-            sp: 0,
-            s: [0; 12],
-        }
-    }
     /// Create a new task context with a trap return addr and a kernel stack pointer
     pub fn goto_restore(kstack_ptr: usize) -> Self {
         extern "C" {

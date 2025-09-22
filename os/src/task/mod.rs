@@ -51,10 +51,7 @@ lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
         let num_app = get_num_app();
-        let mut tasks = [TaskControlBlock {
-            task_cx: TaskContext::zero_init(),
-            task_status: TaskStatus::UnInit,
-        }; MAX_APP_NUM];
+        let mut tasks = core::array::from_fn(|_| TaskControlBlock::default());
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
@@ -72,6 +69,15 @@ lazy_static! {
 }
 
 impl TaskManager {
+    fn current<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut TaskControlBlock) -> R,
+    {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        f(&mut inner.tasks[current])
+    }
+
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
@@ -82,26 +88,12 @@ impl TaskManager {
         task0.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
-        let mut _unused = TaskContext::zero_init();
+        let mut unused = TaskContext::default();
         // before this, we should drop local variables that must be dropped manually
         unsafe {
-            __switch(&mut _unused as *mut TaskContext, next_task_cx_ptr);
+            __switch(&mut unused as *mut TaskContext, next_task_cx_ptr);
         }
         panic!("unreachable in run_first_task!");
-    }
-
-    /// Change the status of current `Running` task into `Ready`.
-    fn mark_current_suspended(&self) {
-        let mut inner = self.inner.exclusive_access();
-        let current = inner.current_task;
-        inner.tasks[current].task_status = TaskStatus::Ready;
-    }
-
-    /// Change the status of current `Running` task into `Exited`.
-    fn mark_current_exited(&self) {
-        let mut inner = self.inner.exclusive_access();
-        let current = inner.current_task;
-        inner.tasks[current].task_status = TaskStatus::Exited;
     }
 
     /// Find next task to run and return task id.
@@ -142,30 +134,33 @@ pub fn run_first_task() {
     TASK_MANAGER.run_first_task();
 }
 
-/// Switch current `Running` task to the task we have found,
-/// or there is no `Ready` task and we can exit with all applications completed
-fn run_next_task() {
-    TASK_MANAGER.run_next_task();
-}
-
-/// Change the status of current `Running` task into `Ready`.
-fn mark_current_suspended() {
-    TASK_MANAGER.mark_current_suspended();
-}
-
-/// Change the status of current `Running` task into `Exited`.
-fn mark_current_exited() {
-    TASK_MANAGER.mark_current_exited();
-}
-
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
-    mark_current_suspended();
-    run_next_task();
+    TASK_MANAGER.current(|task| {
+        task.task_status = TaskStatus::Ready;
+    });
+    TASK_MANAGER.run_next_task();
 }
 
 /// Exit the current 'Running' task and run the next task in task list.
 pub fn exit_current_and_run_next() {
-    mark_current_exited();
-    run_next_task();
+    TASK_MANAGER.current(|task| {
+        task.task_status = TaskStatus::Exited;
+    });
+    TASK_MANAGER.run_next_task();
+}
+
+/// Add count to current task's syscall counter
+pub fn add_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.current(|task| {
+        task.syscall_counter
+            .entry(syscall_id)
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+    });
+}
+
+/// Get current task's syscall count
+pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.current(|task| task.syscall_counter.get(&syscall_id).copied().unwrap_or(0))
 }
